@@ -1,7 +1,7 @@
 import os
 # Set DRI_PRIME=1 for AMD GPU
 os.environ['DRI_PRIME'] = '1'
-
+from modelManager import save_model_with_metadata
 import pandas as pd
 import numpy as np
 import tensorflow as tf
@@ -9,9 +9,12 @@ from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import Callback
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 from sklearn.model_selection import KFold
 from sklearn.metrics import precision_score, recall_score, accuracy_score, f1_score
 import matplotlib.pyplot as plt
+from tqdm.keras import TqdmCallback
 
 # Configure GPU settings
 try:
@@ -20,7 +23,6 @@ try:
         print("Found the following GPU(s):")
         for gpu in gpus:
             print(f" - {gpu}")
-            # Configure GPU memory growth
             tf.config.experimental.set_memory_growth(gpu, True)
         print("\nGPU memory growth enabled")
     else:
@@ -171,9 +173,10 @@ for units_1 in units_1_options:
                 history = model.fit(
                     X_train_fold, y_train_fold,
                     validation_data=(X_val_fold, y_val_fold),
-                    epochs=20,  # Shorter epochs for tuning
+                    epochs=20,
                     batch_size=32,
-                    verbose=0
+                    verbose=0,
+                    callbacks=[TqdmCallback(verbose=1)]  # Add TQDM progress bar
                 )
 
                 val_loss = min(history.history['val_loss'])
@@ -187,23 +190,56 @@ for units_1 in units_1_options:
                 best_model = model
                 print("New best model found!")
 
-print("\nBest Validation Loss Across All Configurations:", best_val_loss)
-
-# Save the best model
-try:
-    model_path = 'best_traffic_model.keras'
-    best_model.save(model_path)
-    print(f"Best model saved successfully as {model_path}")
-except Exception as e:
-    print(f"Error saving best model: {e}")
-
-# Plot actual vs predicted values
+# Training summary
+print("\nTraining Summary:")
+print(f"Best Validation Loss: {best_val_loss:.4f}")
+print("Best Model Metrics:")
 val_predictions = best_model.predict(X_seq[:500])
-plt.figure(figsize=(12, 6))
-plt.scatter(y_seq[:500], val_predictions[:500], alpha=0.5)
-plt.plot([y_seq.min(), y_seq.max()], [y_seq.min(), y_seq.max()], 'r--', lw=2)
-plt.xlabel('Actual Values')
-plt.ylabel('Predicted Values')
-plt.title('Actual vs Predicted Traffic Flow (First 500 samples)')
-plt.grid(True)
+
+# Evaluate the model on test data
+test_predictions = best_model.predict(X_seq[train_size:])
+test_actual = y_seq[train_size:]
+
+# Metrics
+mse = mean_squared_error(test_actual, test_predictions)
+mae = mean_absolute_error(test_actual, test_predictions)
+precision = precision_score(test_actual.round(), test_predictions.round(), average='weighted')
+recall = recall_score(test_actual.round(), test_predictions.round(), average='weighted')
+f1 = f1_score(test_actual.round(), test_predictions.round(), average='weighted')
+accuracy = accuracy_score(test_actual.round(), test_predictions.round())
+
+# Final metrics
+print("\nEvaluation Metrics on Test Data:")
+print(f"Mean Squared Error (MSE): {mse:.4f}")
+print(f"Mean Absolute Error (MAE): {mae:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1-Score: {f1:.4f}")
+print(f"Accuracy: {accuracy:.4f}")
+
+# Plot Actual vs Predicted
+plt.figure(figsize=(10, 6))
+plt.plot(test_actual[:100], label="Actual", color='blue', marker='o')
+plt.plot(test_predictions[:100], label="Predicted", color='red', linestyle='--', marker='x')
+plt.title("Actual vs Predicted Traffic Flow")
+plt.xlabel("Time Step")
+plt.ylabel("Traffic Flow (Scaled)")
+plt.legend()
 plt.show()
+
+# Final learning rate
+final_lr = tf.keras.backend.get_value(best_model.optimizer.learning_rate)
+print(f"Final Learning Rate: {final_lr:.6f}")
+
+# Prepare metrics dictionary
+metrics = {
+    'mse': mse,
+    'mae': mae,
+    'precision': precision,
+    'recall': recall,
+    'f1': f1,
+    'accuracy': accuracy
+}
+
+# Save the model
+saved_model_path = save_model_with_metadata(best_model, metrics)
